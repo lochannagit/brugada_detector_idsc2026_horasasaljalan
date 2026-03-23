@@ -118,12 +118,20 @@ def find_files_folder(base_dir):
 
 
 # Extract dataset
-unzip_dataset(ZIP_PATH, EXTRACT_DIR)
+# --- GLOBAL PATHS (Move these OUTSIDE the if __name__ == "__main__" block) ---
+try:
+    # Look for the folders created during your local training
+    metadata_path = find_metadata_file(EXTRACT_DIR)
+    files_folder = find_files_folder(EXTRACT_DIR)
+except Exception:
+    # Fallback for Streamlit Cloud where the structure might be flatter
+    metadata_path = None
+    files_folder = os.path.join(EXTRACT_DIR, "files")
 
-# Locate important paths
-metadata_path = find_metadata_file(EXTRACT_DIR)
-files_folder = find_files_folder(EXTRACT_DIR)
-
+# --- ONLY RUN TRAINING LOGIC IF SCRIPT IS RUN DIRECTLY ---
+if __name__ == "__main__":
+    unzip_dataset(ZIP_PATH, EXTRACT_DIR)
+    # ... rest of your training code ...
 # Load metadata
 df = pd.read_csv(metadata_path)
 
