@@ -55,7 +55,140 @@ from sklearn.metrics import (
 )
 
 warnings.filterwarnings("ignore")
+def preprocess_ecg_signal(signal, target_length=5000):
+    """
+    Improved ECG preprocessing:
+    1. Replace NaN/Inf
+    2. Detrend each lead (removes baseline wander)
+    3. Z-score normalize each lead (on actual signal only)
+    4. Standardize length (edge padding to avoid artificial DC jumps)
+    """
+    signal = np.asarray(signal, dtype=float)
 
+    # 1. Replace NaN / inf
+    signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # 2. Detrend each lead
+    processed = np.zeros_like(signal)
+    for i in range(signal.shape[1]):
+        processed[:, i] = detrend(signal[:, i])
+
+    # 3. Z-score normalization per lead (calculated BEFORE padding)
+    for i in range(processed.shape[1]):
+        mean_val = np.mean(processed[:, i])
+        std_val = np.std(processed[:, i])
+        if std_val > 0:
+            processed[:, i] = (processed[:, i] - mean_val) / std_val
+        else:
+            processed[:, i] = processed[:, i] - mean_val
+
+    # 4. Standardize signal length
+    current_len = processed.shape[0]
+
+    if current_len > target_length:
+        # Truncate
+        processed = processed[:target_length, :]
+    elif current_len < target_length:
+        # Edge Padding: repeats the last value instead of adding zeros
+        # This prevents the FFT from seeing a massive "cliff" at the end of the signal
+        pad_len = target_length - current_len
+        processed = np.pad(processed, ((0, pad_len), (0, 0)), mode='edge')
+
+    return processed
+
+def extract_ecg_features(patient_id, files_folder, target_length=5000):
+    """
+    Improved feature extraction from 12-lead ECG.
+    Includes:
+    - time-domain statistics
+    - shape features
+    - energy features
+    - derivative features
+    - simple frequency-domain features
+    """
+    signal, leads, fs = load_ecg_record(patient_id, files_folder)
+    signal = preprocess_ecg_signal(signal, target_length=target_length)
+
+    features = {}
+    features["fs"] = fs
+    features["n_samples"] = signal.shape[0]
+    features["n_leads"] = signal.shape[1]
+
+    for i, lead_name in enumerate(leads):
+        x = signal[:, i]
+
+        # Time-domain statistics
+        features[f"{lead_name}_mean"] = np.mean(x)
+        features[f"{lead_name}_std"] = np.std(x)
+        features[f"{lead_name}_var"] = np.var(x)
+        features[f"{lead_name}_min"] = np.min(x)
+        features[f"{lead_name}_max"] = np.max(x)
+        features[f"{lead_name}_range"] = np.ptp(x)
+        features[f"{lead_name}_median"] = np.median(x)
+        features[f"{lead_name}_q25"] = np.percentile(x, 25)
+        features[f"{lead_name}_q75"] = np.percentile(x, 75)
+        features[f"{lead_name}_iqr"] = np.percentile(x, 75) - np.percentile(x, 25)
+        features[f"{lead_name}_abs_mean"] = np.mean(np.abs(x))
+        features[f"{lead_name}_rms"] = np.sqrt(np.mean(x**2))
+        features[f"{lead_name}_skew"] = skew(x)
+        features[f"{lead_name}_kurtosis"] = kurtosis(x)
+
+        # Energy / complexity
+        features[f"{lead_name}_energy"] = np.sum(x**2)
+        features[f"{lead_name}_zero_crossings"] = np.sum(np.diff(np.signbit(x)).astype(int))
+
+        # First derivative features
+        dx = np.diff(x)
+        features[f"{lead_name}_diff_mean"] = np.mean(dx)
+        features[f"{lead_name}_diff_std"] = np.std(dx)
+        features[f"{lead_name}_diff_energy"] = np.sum(dx**2)
+
+        # Frequency-domain features
+        fft_vals = np.abs(np.fft.rfft(x))
+        fft_freqs = np.fft.rfftfreq(len(x), d=1/fs)
+
+        if len(fft_vals) > 1:
+            dominant_freq = fft_freqs[np.argmax(fft_vals[1:]) + 1]
+            spectral_power = np.sum(fft_vals**2)
+        else:
+            dominant_freq = 0.0
+            spectral_power = 0.0
+
+        features[f"{lead_name}_dominant_freq"] = dominant_freq
+        features[f"{lead_name}_spectral_power"] = spectral_power
+
+    # Global features
+    features["global_mean"] = np.mean(signal)
+    features["global_std"] = np.std(signal)
+    features["global_var"] = np.var(signal)
+    features["global_min"] = np.min(signal)
+    features["global_max"] = np.max(signal)
+    features["global_range"] = np.ptp(signal)
+    features["global_energy"] = np.sum(signal**2)
+    features["global_abs_mean"] = np.mean(np.abs(signal))
+
+# ============================================================
+    # BRUGADA-SPECIFIC LEAD GROUPING
+    # V1, V2, and V3 are the "Diagnostic Leads" for Brugada
+    # ============================================================
+    precordial_leads = [l for l in leads if l in ['V1', 'V2', 'V3']]
+    
+    if precordial_leads:
+        # 1. Precordial Max Amplitude (Checking for ST-elevation height)
+        precordial_data = [signal[:, leads.index(l)] for l in precordial_leads]
+        features["precordial_max_peak"] = np.max(precordial_data)
+        
+        # 2. Precordial Variance (Brugada often has high-frequency "notching")
+        features["precordial_avg_std"] = np.mean([np.std(d) for d in precordial_data])
+        
+        # 3. V1-V2 Slope (Type 1 Brugada has a characteristic "down-sloping" ST segment)
+        v1_idx = leads.index('V1') if 'V1' in leads else None
+        if v1_idx is not None:
+            v1_signal = signal[:, v1_idx]
+            # Simple approximation of signal "tilt"
+            features["v1_slope"] = np.mean(np.diff(v1_signal))
+            
+    return features
 # -------------------------
 # USER PATH SETTINGS (PORTABLE VERSION)
 # -------------------------
@@ -130,16 +263,15 @@ except Exception:
 
 # --- ONLY RUN TRAINING LOGIC IF SCRIPT IS RUN DIRECTLY ---
 if __name__ == "__main__":
-    unzip_dataset(ZIP_PATH, EXTRACT_DIR)
-    # ... rest of your training code ...
-# Load metadata
-df = pd.read_csv(metadata_path)
-
-print("\nMetadata loaded successfully.")
-print(df.head())
-print("\nDataset shape:", df.shape)
-print("\nColumns:", df.columns.tolist())
-
+    # Everything below this line will ONLY run on your computer in Spyder
+    # It will NOT run when Streamlit imports the file.
+    
+    if metadata_path:
+        print("Running locally: Loading metadata...")
+        df = pd.read_csv(metadata_path)
+        print(df.head())
+    else:
+        print("Metadata path not found.")
 
 # =========================
 # 3. EDA
@@ -280,47 +412,6 @@ print("\nExample ECG shapes from first 10 valid subjects:")
 print(sample_lengths)
 
 
-def preprocess_ecg_signal(signal, target_length=5000):
-    """
-    Improved ECG preprocessing:
-    1. Replace NaN/Inf
-    2. Detrend each lead (removes baseline wander)
-    3. Z-score normalize each lead (on actual signal only)
-    4. Standardize length (edge padding to avoid artificial DC jumps)
-    """
-    signal = np.asarray(signal, dtype=float)
-
-    # 1. Replace NaN / inf
-    signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # 2. Detrend each lead
-    processed = np.zeros_like(signal)
-    for i in range(signal.shape[1]):
-        processed[:, i] = detrend(signal[:, i])
-
-    # 3. Z-score normalization per lead (calculated BEFORE padding)
-    for i in range(processed.shape[1]):
-        mean_val = np.mean(processed[:, i])
-        std_val = np.std(processed[:, i])
-        if std_val > 0:
-            processed[:, i] = (processed[:, i] - mean_val) / std_val
-        else:
-            processed[:, i] = processed[:, i] - mean_val
-
-    # 4. Standardize signal length
-    current_len = processed.shape[0]
-
-    if current_len > target_length:
-        # Truncate
-        processed = processed[:target_length, :]
-    elif current_len < target_length:
-        # Edge Padding: repeats the last value instead of adding zeros
-        # This prevents the FFT from seeing a massive "cliff" at the end of the signal
-        pad_len = target_length - current_len
-        processed = np.pad(processed, ((0, pad_len), (0, 0)), mode='edge')
-
-    return processed
-
 
 # =========================
 # 6. FEATURE ENGINEERING
@@ -329,99 +420,8 @@ print("\n====================")
 print("FEATURE ENGINEERING")
 print("====================")
 
-def extract_ecg_features(patient_id, files_folder, target_length=5000):
-    """
-    Improved feature extraction from 12-lead ECG.
-    Includes:
-    - time-domain statistics
-    - shape features
-    - energy features
-    - derivative features
-    - simple frequency-domain features
-    """
-    signal, leads, fs = load_ecg_record(patient_id, files_folder)
-    signal = preprocess_ecg_signal(signal, target_length=target_length)
 
-    features = {}
-    features["fs"] = fs
-    features["n_samples"] = signal.shape[0]
-    features["n_leads"] = signal.shape[1]
 
-    for i, lead_name in enumerate(leads):
-        x = signal[:, i]
-
-        # Time-domain statistics
-        features[f"{lead_name}_mean"] = np.mean(x)
-        features[f"{lead_name}_std"] = np.std(x)
-        features[f"{lead_name}_var"] = np.var(x)
-        features[f"{lead_name}_min"] = np.min(x)
-        features[f"{lead_name}_max"] = np.max(x)
-        features[f"{lead_name}_range"] = np.ptp(x)
-        features[f"{lead_name}_median"] = np.median(x)
-        features[f"{lead_name}_q25"] = np.percentile(x, 25)
-        features[f"{lead_name}_q75"] = np.percentile(x, 75)
-        features[f"{lead_name}_iqr"] = np.percentile(x, 75) - np.percentile(x, 25)
-        features[f"{lead_name}_abs_mean"] = np.mean(np.abs(x))
-        features[f"{lead_name}_rms"] = np.sqrt(np.mean(x**2))
-        features[f"{lead_name}_skew"] = skew(x)
-        features[f"{lead_name}_kurtosis"] = kurtosis(x)
-
-        # Energy / complexity
-        features[f"{lead_name}_energy"] = np.sum(x**2)
-        features[f"{lead_name}_zero_crossings"] = np.sum(np.diff(np.signbit(x)).astype(int))
-
-        # First derivative features
-        dx = np.diff(x)
-        features[f"{lead_name}_diff_mean"] = np.mean(dx)
-        features[f"{lead_name}_diff_std"] = np.std(dx)
-        features[f"{lead_name}_diff_energy"] = np.sum(dx**2)
-
-        # Frequency-domain features
-        fft_vals = np.abs(np.fft.rfft(x))
-        fft_freqs = np.fft.rfftfreq(len(x), d=1/fs)
-
-        if len(fft_vals) > 1:
-            dominant_freq = fft_freqs[np.argmax(fft_vals[1:]) + 1]
-            spectral_power = np.sum(fft_vals**2)
-        else:
-            dominant_freq = 0.0
-            spectral_power = 0.0
-
-        features[f"{lead_name}_dominant_freq"] = dominant_freq
-        features[f"{lead_name}_spectral_power"] = spectral_power
-
-    # Global features
-    features["global_mean"] = np.mean(signal)
-    features["global_std"] = np.std(signal)
-    features["global_var"] = np.var(signal)
-    features["global_min"] = np.min(signal)
-    features["global_max"] = np.max(signal)
-    features["global_range"] = np.ptp(signal)
-    features["global_energy"] = np.sum(signal**2)
-    features["global_abs_mean"] = np.mean(np.abs(signal))
-
-# ============================================================
-    # BRUGADA-SPECIFIC LEAD GROUPING
-    # V1, V2, and V3 are the "Diagnostic Leads" for Brugada
-    # ============================================================
-    precordial_leads = [l for l in leads if l in ['V1', 'V2', 'V3']]
-    
-    if precordial_leads:
-        # 1. Precordial Max Amplitude (Checking for ST-elevation height)
-        precordial_data = [signal[:, leads.index(l)] for l in precordial_leads]
-        features["precordial_max_peak"] = np.max(precordial_data)
-        
-        # 2. Precordial Variance (Brugada often has high-frequency "notching")
-        features["precordial_avg_std"] = np.mean([np.std(d) for d in precordial_data])
-        
-        # 3. V1-V2 Slope (Type 1 Brugada has a characteristic "down-sloping" ST segment)
-        v1_idx = leads.index('V1') if 'V1' in leads else None
-        if v1_idx is not None:
-            v1_signal = signal[:, v1_idx]
-            # Simple approximation of signal "tilt"
-            features["v1_slope"] = np.mean(np.diff(v1_signal))
-            
-    return features
 if __name__ == "__main__":
     # Move all your training, CSV loading, and plotting here
     print("Starting training pipeline...")
