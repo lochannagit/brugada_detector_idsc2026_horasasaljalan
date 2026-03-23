@@ -6,20 +6,26 @@ import os
 from pathlib import Path
 from brugada_pipeline import preprocess_ecg_signal, extract_ecg_features
 
+
 # 1. Page Configuration
 st.set_page_config(page_title="Brugada Detector", layout="wide")
 
-# --- SMART PATH RESOLUTION ---
-# This identifies the folder where app.py is currently located
-CURRENT_DIR = Path(__file__).resolve().parent
+# --- SMART PATH RESOLUTION (UPDATED FOR GITHUB) ---
+# Get the directory where app.py is sitting on the GitHub server
+BASE_DIR = Path(__file__).resolve().parent
 
-# Logic to handle both local nested folders and flat cloud structures
-if (CURRENT_DIR / "files").exists():
-    PROJECT_ROOT = CURRENT_DIR
+# Check three common locations to find the project root
+if (BASE_DIR / "files").exists():
+    # Scenario 1: Everything is in the main folder
+    PROJECT_ROOT = BASE_DIR
+elif (BASE_DIR / "brugada_project" / "files").exists():
+    # Scenario 2: Everything is inside a 'brugada_project' subfolder
+    PROJECT_ROOT = BASE_DIR / "brugada_project"
 else:
-    PROJECT_ROOT = CURRENT_DIR / "brugada_project"
+    # Scenario 3: Fallback (default to current directory)
+    PROJECT_ROOT = BASE_DIR
 
-# Define final paths (Works on Windows and Cloud Linux)
+# Final Paths - using / operator for cross-platform compatibility
 MODEL_PATH = PROJECT_ROOT / "saved_model" / "best_brugada_model.pkl"
 files_folder = str(PROJECT_ROOT / "files")
 
@@ -27,13 +33,16 @@ files_folder = str(PROJECT_ROOT / "files")
 @st.cache_resource
 def load_model():
     if not MODEL_PATH.exists():
-        st.error(f"Model file missing at: {MODEL_PATH}")
+        st.error(f"⚠️ Model file missing! Expected at: {MODEL_PATH}")
         return None
-    # Ensure scikit-learn is the same version as training
-    return joblib.load(MODEL_PATH)
+    try:
+        return joblib.load(MODEL_PATH)
+    except Exception as e:
+        st.error(f"❌ Version Mismatch Error: {e}")
+        st.info("Try retraining your model with the latest scikit-learn version.")
+        return None
 
 model = load_model()
-
 # --- SIDEBAR: Medical & DOSM Context ---
 with st.sidebar:
     st.header("📋 Medical Reference")
