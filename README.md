@@ -12,7 +12,7 @@ This system uses machine learning to analyze 12-lead ECG signals and detect patt
 - Risk probability assessment with confidence scores
 
 ## 🚀 Live Demo
-[Link to your Streamlit app after deployment]
+https://brugadadetectoridsc2026horasasaljalan-6visssyjgfxru9yfffzomt.streamlit.app/
 
 ## 🛠️ Installation
 
