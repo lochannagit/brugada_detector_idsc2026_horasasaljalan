@@ -34,15 +34,11 @@ The following patient IDs are available for testing:
 
 ## 📚 Citation
 
-**If you use this dataset, please cite:**
-
 **Brugada-HUCA Dataset:**
 > Garcia-Isla, G., et al. (2022). Brugada-HUCA Database (version 1.0.0). PhysioNet. https://doi.org/10.13026/xxxxx
 
 **PhysioNet Platform:**
 > Goldberger, A., Amaral, L., Glass, L., Hausdorff, J., Ivanov, P. C., Mark, R., ... & Stanley, H. E. (2000). PhysioBank, PhysioToolkit, and PhysioNet: Components of a new research resource for complex physiologic signals. *Circulation*, 101(23), e215-e220.
-
----
 
 ## ⚠️ Disclaimer
 
